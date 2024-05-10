@@ -6,6 +6,7 @@ def parse_args():
     
     # TODO setup an argument to specify whether this is a local or internet-resident file.
     parser.add_argument("--video", type=str, default=None, help="Path to the video file you want to process")
+    parser.add_argument("--description", type=str, default=None, help="The description of the part of the video to extract (currently visual only).")
     
     return parser.parse_args()
 
@@ -43,5 +44,5 @@ def display_timestamp(video_path: str, timestamp: np.int64) -> None:
 
 if __name__ == 'main':
     args = parse_args()
-    timestamp = get_frame(args.video, args.text)    
+    timestamp = get_frame(args.video, args.description)    
     display_timestamp(args.video, timestamp)
