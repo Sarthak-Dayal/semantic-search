@@ -4,6 +4,8 @@ import numpy as np
 import cv2
 import torch
 import clip
+import time
+import PIL
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -14,9 +16,9 @@ def parse_args():
     parser.add_argument("--device", type=str, default="auto", help="The device to use for PyTorch [cuda, cpu, auto (default)]")
     return parser.parse_args()
 
-def get_chunks(video_path: str) -> List[List[np.ndarray]]:
+def get_chunks(video_path: str) -> Tuple[List[List[np.ndarray]], int]:
     """
-    Extract a list of one-second chunks for a particular video.
+    Extract a list of one-second chunks for a particular video and return the video's frame rate.
 
     Args:
         video_path (str): The path to the video to be processed.
@@ -24,6 +26,7 @@ def get_chunks(video_path: str) -> List[List[np.ndarray]]:
     Returns:
         List[List[np.ndarray]]: A list of one second chunks in the video where each chunk is a 
         list of frames.
+        int: The frame rate for the video.
     """
     try:
         # Open video
@@ -41,19 +44,19 @@ def get_chunks(video_path: str) -> List[List[np.ndarray]]:
         while True:
             ret, frame = video.read()
             if ret:
-                single_frames.append(frame)
+                single_frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             else:
                 break
 
         if not single_frames:
             raise ValueError("No frames could be read from the video.")
 
-        chunks = [single_frames[i:min(i + fps, len(single_frames) - 1)] for i in range(0, len(single_frames), fps)]
-        return chunks
+        chunks = [single_frames[i:i + fps] for i in range(0, len(single_frames) - (len(single_frames) % fps), fps)]
+        return chunks, fps
 
     except Exception as e:
         print(f"An error occurred: {e}")
-        return []
+        return [], None
 
     finally:
         video.release()
@@ -92,7 +95,7 @@ def get_frame(chunks: List[List[np.ndarray]], text: str, device: str) -> int:
     video_embeddings = []
 
     for chunk in chunks:
-        chunk_frames = [torch.unsqueeze(preprocess(frame), 0) for frame in chunk]
+        chunk_frames = [torch.unsqueeze(preprocess(PIL.Image.fromarray(frame)), 0) for frame in chunk]
         all_tensors = torch.cat(chunk_frames, 0)
 
         with torch.no_grad():
@@ -103,9 +106,45 @@ def get_frame(chunks: List[List[np.ndarray]], text: str, device: str) -> int:
     with torch.no_grad():
         query_embedding = model.encode_text(query_text)
     
+    words = text.split(" ")
+    word_embeds = []
+    for word in words:
+        clip.tokenize([word]).to(worker_device)
+        with torch.no_grad():
+            word_embedding = model.encode_text(query_text)
+            word_embeds.append(word_embedding)
+
     # Use cosine similarity to find the closest embedding in the embedding space
     cosines = cos_sim(video_embeddings, query_embedding)
+
+    word_cosines = word_cos_sim(word_embeds, query_embedding)
+    words_and_cosines = list(zip(words, word_cosines))
+    print(sorted(words_and_cosines, key=lambda x: x[1], reverse=True))
+
     return np.argmax(cosines)
+
+def word_cos_sim(word_embeddings: List[torch.Tensor], query_embed: torch.Tensor) -> np.ndarray:
+    """
+    Get a list of cosine distances between a list of embeddings and a single embedding.
+
+    Args:
+        video_embeddings (List[torch.Tensor]): A list containing all chunk-level video embeddings.
+        query_embed (torch.Tensor): An embedding for the query
+
+    Returns:
+        np.ndarray: An array of all the cosine distances between each video embedding and the query embedding.
+    """
+    
+    # get an average embedding for each second-long chunk
+    word_embeds = torch.stack(word_embeddings)
+
+    # normalize embeddings to avoid divisions by norm
+    norm_averages = torch.nn.functional.normalize(word_embeds, p=2, dim=1).squeeze(dim=1)
+    norm_query = torch.nn.functional.normalize(query_embed, p=2, dim=1)
+    # compute cosines
+    cosines = torch.mm(norm_averages, norm_query.t())
+
+    return cosines.cpu().numpy()
 
 def cos_sim(video_embeddings: List[torch.Tensor], query_embed: torch.Tensor) -> np.ndarray:
     """
@@ -118,28 +157,40 @@ def cos_sim(video_embeddings: List[torch.Tensor], query_embed: torch.Tensor) -> 
     Returns:
         np.ndarray: An array of all the cosine distances between each video embedding and the query embedding.
     """
-    # Convert list of tensors to 2D numpy array
-    video_embeddings_np = np.stack([v.cpu().numpy() for v in video_embeddings])
-    query_embed_np = query_embed.cpu().numpy()
+    
+    # get an average embedding for each second-long chunk
+    all_chunks = torch.stack(video_embeddings)
+    average_embedding_per_chunk = torch.mean(all_chunks, dim=1)
 
-    # Get cosine similarities
-    norms = np.linalg.norm(video_embeddings_np, axis=1) * np.linalg.norm(query_embed_np)
-    return np.dot(video_embeddings_np, query_embed_np) / norms
+    # normalize embeddings to avoid divisions by norm
+    norm_averages = torch.nn.functional.normalize(average_embedding_per_chunk, p=2, dim=1)
+    norm_query = torch.nn.functional.normalize(query_embed, p=2, dim=1)
+    # compute cosines
+    cosines = torch.mm(norm_averages, norm_query.t())
 
+    return cosines.cpu().numpy()
 
-def display_timestamp(chunks: List[List[np.ndarray]], timestamp: int) -> None:
+def display_timestamp(chunks: List[List[np.ndarray]], timestamp: int, fps: int) -> None:
     """
     Displays the video requested starting at the given timestamp (second granular).
 
     Args:
         chunks (List[List[np.ndarray]]): A list of all one-second chunks present in the video, each of which contains a list of frames.
         timestamp (np.int64): The timestamp to display.
+        fps (int): The frame rate of the video.
     """
 
     # FIXME Figure out the best way to display, should we display just the one second clip, start a little before it, etc.
+    chunk = chunks[timestamp]
+    while True:
+        for frame in chunk:
+            cv2.imshow('video', frame)
+            if cv2.waitKey(int(1000 / fps)) & 0xFF == ord('q'):  # 'q' to quit
+                break
+            time.sleep(1.0 / fps)
 
-if __name__ == 'main':
+if __name__ == '__main__':
     args = parse_args()
-    chunks = get_chunks(args.video)
+    chunks, fps = get_chunks(args.video)
     timestamp = get_frame(chunks, args.description, args.device)    
-    display_timestamp(args.video, timestamp)
+    display_timestamp(chunks, timestamp, fps)
