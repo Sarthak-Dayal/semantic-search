@@ -116,35 +116,7 @@ def get_frame(chunks: List[List[np.ndarray]], text: str, device: str) -> int:
 
     # Use cosine similarity to find the closest embedding in the embedding space
     cosines = cos_sim(video_embeddings, query_embedding)
-
-    word_cosines = word_cos_sim(word_embeds, query_embedding)
-    words_and_cosines = list(zip(words, word_cosines))
-    print(sorted(words_and_cosines, key=lambda x: x[1], reverse=True))
-
     return np.argmax(cosines)
-
-def word_cos_sim(word_embeddings: List[torch.Tensor], query_embed: torch.Tensor) -> np.ndarray:
-    """
-    Get a list of cosine distances between a list of embeddings and a single embedding.
-
-    Args:
-        video_embeddings (List[torch.Tensor]): A list containing all chunk-level video embeddings.
-        query_embed (torch.Tensor): An embedding for the query
-
-    Returns:
-        np.ndarray: An array of all the cosine distances between each video embedding and the query embedding.
-    """
-    
-    # get an average embedding for each second-long chunk
-    word_embeds = torch.stack(word_embeddings)
-
-    # normalize embeddings to avoid divisions by norm
-    norm_averages = torch.nn.functional.normalize(word_embeds, p=2, dim=1).squeeze(dim=1)
-    norm_query = torch.nn.functional.normalize(query_embed, p=2, dim=1)
-    # compute cosines
-    cosines = torch.mm(norm_averages, norm_query.t())
-
-    return cosines.cpu().numpy()
 
 def cos_sim(video_embeddings: List[torch.Tensor], query_embed: torch.Tensor) -> np.ndarray:
     """
@@ -165,6 +137,7 @@ def cos_sim(video_embeddings: List[torch.Tensor], query_embed: torch.Tensor) -> 
     # normalize embeddings to avoid divisions by norm
     norm_averages = torch.nn.functional.normalize(average_embedding_per_chunk, p=2, dim=1)
     norm_query = torch.nn.functional.normalize(query_embed, p=2, dim=1)
+    
     # compute cosines
     cosines = torch.mm(norm_averages, norm_query.t())
 
