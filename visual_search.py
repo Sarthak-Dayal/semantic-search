@@ -6,6 +6,7 @@ import torch
 import clip
 import time
 import PIL
+from utils import cos_sim_list
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -51,7 +52,12 @@ def get_chunks(video_path: str) -> Tuple[List[List[np.ndarray]], int]:
         if not single_frames:
             raise ValueError("No frames could be read from the video.")
 
-        chunks = [single_frames[i:i + fps] for i in range(0, len(single_frames) - (len(single_frames) % fps), fps)]
+        chunks = []
+        for i in range(0, len(single_frames) - (len(single_frames) % fps), fps):
+            chunk = single_frames[i:i + fps]
+            step = max(1, len(chunk) // 5)
+            chunks.append([chunk[j] for j in range(0, len(chunk), step)][:5])
+            
         return chunks, fps
 
     except Exception as e:
@@ -64,7 +70,7 @@ def get_chunks(video_path: str) -> Tuple[List[List[np.ndarray]], int]:
 
 def get_frame(chunks: List[List[np.ndarray]], text: str, device: str) -> int:
     """
-    Returns a timestamp (second granular) of the timestamp where the image in the video frame
+    Returns a timestamp (second granular) of the video where the image in the video frame
     matches the requested text.
 
     Args:
@@ -115,33 +121,8 @@ def get_frame(chunks: List[List[np.ndarray]], text: str, device: str) -> int:
             word_embeds.append(word_embedding)
 
     # Use cosine similarity to find the closest embedding in the embedding space
-    cosines = cos_sim(video_embeddings, query_embedding)
+    cosines = cos_sim_list(video_embeddings, query_embedding)
     return np.argmax(cosines)
-
-def cos_sim(video_embeddings: List[torch.Tensor], query_embed: torch.Tensor) -> np.ndarray:
-    """
-    Get a list of cosine distances between a list of embeddings and a single embedding.
-
-    Args:
-        video_embeddings (List[torch.Tensor]): A list containing all chunk-level video embeddings.
-        query_embed (torch.Tensor): An embedding for the query
-
-    Returns:
-        np.ndarray: An array of all the cosine distances between each video embedding and the query embedding.
-    """
-    
-    # get an average embedding for each second-long chunk
-    all_chunks = torch.stack(video_embeddings)
-    average_embedding_per_chunk = torch.mean(all_chunks, dim=1)
-
-    # normalize embeddings to avoid divisions by norm
-    norm_averages = torch.nn.functional.normalize(average_embedding_per_chunk, p=2, dim=1)
-    norm_query = torch.nn.functional.normalize(query_embed, p=2, dim=1)
-    
-    # compute cosines
-    cosines = torch.mm(norm_averages, norm_query.t())
-
-    return cosines.cpu().numpy()
 
 def display_timestamp(chunks: List[List[np.ndarray]], timestamp: int, fps: int) -> None:
     """
